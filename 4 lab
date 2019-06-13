@@ -1,0 +1,247 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import math as m
+from scipy.integrate import ode
+
+gamma = 10
+gamma = m.pi * gamma / 180
+h = 0
+Re = 6375000
+G = 6.67e-11
+Me = 5.97e24
+coeff_Cx = 0.1
+totalTime = 0 #общее время, суммируется с каждым проходом интегрирования и нахождения на орбите
+w = 2 * m.pi / 86164
+
+S1_fuelMass = 409500 #параметры первой ступени
+S1_emptyMass = 22200
+S1_Force = 8000000
+S1_Vfuel = 2580
+S1_Diametr = 3.7
+
+S2_fuelMass = 107500 #второй ступени
+S2_emptyMass = 4000
+S2_Force = 981000
+S2_Vfuel = 2580
+S2_Diametr = 3.7
+
+SpaceshipMass = 7000 # масса, которая выводится (полезная)
+TotalMass = SpaceshipMass + S2_fuelMass + S1_fuelMass + S2_emptyMass + S1_emptyMass #общая-ступени и корабль
+V0 = 0
+angle = 0
+
+
+def r(x, y): #расстояние от центра Земли до данной точки
+    r = m.sqrt(x * x + y * y)
+    return r
+
+
+def gh(x, y): #ускорение на высоте
+    g0 = 9.81
+    gh = g0 * Re * Re / (r(x, y) ** 2)
+    return gh
+
+
+def sina(x, y): #поворачиваем, чтобы всегда к центру
+    sina = y / r(x, y)
+    return sina
+
+
+def cosa(x, y):
+    cosa = x / r(x, y)
+    return cosa
+
+
+def fout1(t, y):  # обработчик шага (критерий, по которому мы интегрируем: если выполнилось условие, что топливо закончилось, то он передает -1 и интегрирование заканчивается
+    ts.append(t)
+    ys.append(list(y.copy()))
+    y1, y2, y3, y4 = y
+    if (S1_fuelMass - S1_Force / S1_Vfuel * t <= 0): # ычитается расход топлива, умноженный на все время работы ступени
+        return -1
+
+
+def fout4(t, y):  # обработчик шага, смотрим скорость, которую
+    ts.append(t)
+    ys.append(list(y.copy()))
+    y1, y2, y3, y4 = y
+    if (y2 * y2 + y4 * y4 >= G * Me / (m.sqrt(y1 * y1 + y3 * y3))): # слева-скорость, которую имеем, справа-значение орбитальной скорости для данной высоты, у1- коорд по иксу,у2-скорсоть по иксу
+        return -1
+
+
+def rho(x, y):
+    '''с помощью линейной апроксимации определяет плотность воздуха на необходимой нам высоте'''
+    Space = [0, 1.85 * 0.00001, 1.5 * 0.0001, 3 * 0.0001, 1.03 * 0.001, 4 * 0.001, 7.26 * 0.001, 0.0136, 0.0251, 0.0469, #плотость для разных высот
+             0.0889, 0.1216, 0.1665, 0.2279, 0.3119, 0.3648, 0.4135, 0.4671, 0.5258, 0.59, 0.6601, 0.7365, 0.8194,
+             0.9093, 1, 1.1]
+    # плотность для разных высот
+    Space_lst = [100000, 80000, 70000, 60000, 50000, 40000, 36000, 32000, 28000, 24000, 20000, 18000, 16000, 14000, #высота в км
+                 12000, 11000, 10000, 9000, 8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000]
+    h = m.sqrt(x * x + y * y) - Re  #высота, на которой корабль
+    i = 25
+    while h > Space_lst[i]:
+        i -= 1
+        if i < 0:
+            return 0
+
+#аппроксимация
+    delta = h - Space_lst[i]
+    # разница между высотой и ближайшим значением
+    delta_h = Space_lst[i - 1] - Space_lst[i]
+    # разница между ближайшими соседями
+    otn = delta / delta_h
+    # относительное отклонение
+    p = Space[i] + ((Space[i - 1] - Space[i]) * otn) #к значению на данной высоте дополнително прибавляется кусочек
+    return p
+
+
+def launcher_angle(x, y): # подобраны углы для определенных высот
+    Space_lst = [340000, 320000, 300000, 2700000, 2400000, 200000, 170000, 140000, 110000, 100000, 90000, 80000, 60000,
+                 50000, 40000, 30000, 20000, 15000, 12000, 9000, 6000, 2000, 0]
+    angle_lst = [103, 100, 96, 93, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 25, 10, 5, 0, 0]
+    h = m.sqrt(x * x + y * y) - Re
+    i = 0
+    while h < Space_lst[i]:
+        i += 1
+        if i >= 24:
+            break
+    return angle_lst[i] * m.pi / 180
+
+
+# функция правых частей системы ОДУ, диффур-из Мещерского
+def f1(t, y): #справа-все силы
+    global TotalMass, S1_fuelMass
+    y1, y2, y3, y4 = y #все те же игреки
+    dM_fuel = S1_Force / S1_Vfuel * t #расход топлива
+    jet_a = S1_Force / (TotalMass - dM_fuel) #ускорение, создаваемое силой тяги
+    vv = y2 * y2 + y4 * y4 # квадрат скорости, которую мы имеем сейчас
+    angle = launcher_angle(y1, y3)
+    S = m.pi * S1_Diametr ** 2 / 4 # площадь ступени
+    resistant_a = coeff_Cx * rho(y1, y3) * vv * S / (TotalMass - dM_fuel) / 2 # ускорение, создаваемое силой сопротивления
+    ax = -y1 * G * Me / ((y1 * y1 + y3 * y3) ** 1.5) + (jet_a - resistant_a) * m.cos(angle)
+    ay = -y3 * G * Me / ((y1 * y1 + y3 * y3) ** 1.5) + (jet_a - resistant_a) * m.sin(angle)
+    return [y2, ax, y4, ay]
+
+
+def f2(t, y): # аналогично f1, слева-все, что с массой
+    global TotalMass, S2_fuelMass
+    y1, y2, y3, y4 = y
+    dM_fuel = S2_Force / S2_Vfuel * t
+    jet_a = S2_Force / (TotalMass - dM_fuel)
+    angle = launcher_angle(y1, y3)
+    vv = y2 * y2 + y4 * y4
+    S = m.pi * S2_Diametr ** 2 / 4
+    resistant_a = coeff_Cx * rho(y1, y3) * vv * S / (TotalMass - dM_fuel) / 2
+    ax = -y1 * G * Me / ((y1 * y1 + y3 * y3) ** 1.5) + (jet_a - resistant_a) * m.cos(angle)
+    ay = -y3 * G * Me / ((y1 * y1 + y3 * y3) ** 1.5) + (jet_a - resistant_a) * m.sin(angle)
+    return [y2, ax, y4, ay]
+
+
+tmax = 1700 #  просто для ограничения всей работы программы
+
+#начальные условия
+x_start = Re
+y_start = 0
+
+Vre = w * r(x_start, y_start) * m.cos(gamma)
+
+Vx_start = 0
+Vy_start = Vre
+
+xc, yc = [], [] # массив с Землей( чтобы ее потом нарисовать)
+for i in range(0, 630): #вращаем точки, заносим в массив, чтобы её нарисовать
+    xc.append(Re * m.cos(i / 100))
+    yc.append(Re * m.sin(i / 100))
+
+# {-------------------1 ступень----------------------------}
+y0, t0 = [x_start, Vx_start, y_start, Vy_start], 0  # начальные условия
+ODE = ode(f1)
+ODE.set_integrator('dopri5')  # , max_step=0.01)    способ интегрирования
+ODE.set_solout(fout1) #критерий интегрируемости, заканчиваем, когда выполнилось уловие
+ts, ys = [], [] # ts-массив времени, который потрачен для данного этапа интегрирования
+ODE.set_initial_value(y0, t0)  # задание начальных значений
+ODE.integrate(S1_fuelMass / (S1_Force / S1_Vfuel))  # решение ОДУ относительно расхода топлива
+Y = np.array(ys)
+
+plt.plot(Y[:, 0], Y[:, 2], linewidth=3)  # ,label='k=%.1f'% k)   строим графики
+plt.axis('equal')
+plt.plot(xc, yc, linewidth=2)
+plt.title("Launch \n ")
+
+plt.grid(True)
+
+plt.show()
+print('x-Re=', Y[-1:, 0] - Re, 'y=', Y[-1:, 2], 'Vx=', Y[-1:, 1], 'Vy=', Y[-1:, 3]) # вводим скорсти и координаты
+print('h=', m.sqrt(Y[-1:, 0] ** 2 + Y[-1:, 2] ** 2) - Re) #вводим высоту, на которой находимся
+print('time=', ts[-1]); #время, котрое потратили для данного этапа интегрирования
+print(TotalMass)
+totalTime += ts[-1] #время интегрирования
+TotalMass -= (S1_fuelMass + S1_emptyMass) #отбрасываем первую ступень
+print(TotalMass)
+print('angle=', 180 / m.pi * launcher_angle(Y[-1:, 0], Y[-1:, 2])) #нынешний угол поворота ракеты
+
+# {-------------------2 ступень----------------------------}
+y0, t0 = [Y[-1:, 0], Y[-1:, 1], Y[-1:, 2], Y[-1:, 3]], 0  # начальные условия
+ODE = ode(f2)
+ODE.set_integrator('dopri5')
+ODE.set_solout(fout4)
+ts, ys = [], []
+ODE.set_initial_value(y0, t0)  # задание начальных значений
+ODE.integrate(S2_fuelMass / (S2_Force / S2_Vfuel))  # решение ОДУ
+Y = np.array(ys)
+
+plt.plot(Y[:, 0], Y[:, 2], linewidth=3)  # ,label='k=%.1f'% k)
+plt.axis('equal')
+plt.plot(xc, yc, linewidth=2)
+plt.title("Go to low Earth orbit 1 \n ")
+
+plt.grid(True) #сетка
+
+plt.show()
+print('x=', Y[-1:, 0], 'y=', Y[-1:, 2], 'Vx=', Y[-1:, 1], 'Vy=', Y[-1:, 3])
+print('h=', m.sqrt(Y[-1:, 0] ** 2 + Y[-1:, 2] ** 2) - Re)
+print('time=', ts[-1]);
+print(TotalMass)
+totalTime += ts[-1]
+# TotalMass-=(S2_fuelMass+S2_emptyMass)
+print(TotalMass)
+print('angle=', 180 / m.pi * launcher_angle(Y[-1:, 0], Y[-1:, 2]))
+
+# {-------------------свободный полет----------------------------}
+xk = Y[-1:, 0] # вытаскиваем значения координат и скоростей
+yk = Y[-1:, 2]
+Vx1 = Y[-1:, 1]
+Vy1 = Y[-1:, 3]
+Vo = m.sqrt(Vx1 * Vx1 + Vy1 * Vy1)
+dt = 0.1 #шаги
+X = [] #сюда-точки координат траекторий свободного полета
+Y = []
+while totalTime < 3.6 * tmax: # за это время ракета облетает полностью Землю
+    ax = 0
+    ay = -gh(xk, yk)
+    ax1 = ay * cosa(xk, yk) #зависимость ускорения от координат
+    ay1 = ay * sina(xk, yk)
+    Vx1 = Vx1 + ax1 * dt #добавляем приращения
+    Vy1 = Vy1 + ay1 * dt
+    Vo = m.sqrt(Vx1 * Vx1 + Vy1 * Vy1)
+    xk = xk + (Vx1) * dt
+    yk = yk + (Vy1) * dt
+    totalTime += dt
+    X.append(xk) #заноносим в массив
+    Y.append(yk)
+X1 = [] #снова рисуем Землю
+Y1 = []
+#рисуем Землю и траекторию, которая получилась
+for i in range(0, 360):
+    X1.append(Re * m.sin(i / 180 * m.pi))
+    Y1.append(Re * m.cos(i / 180 * m.pi))
+
+plt.figure(1)
+plt.ylabel(u'Y, м ')
+plt.xlabel(u'X, м ')
+plt.axis('equal') #оси так, чтобы деление на них было одинаковое
+plt.title('trajectory')
+plt.grid(True)
+g1 = plt.plot(X, Y)
+g2 = plt.plot(X1, Y1)
+g3 = g1 + g2
+plt.show(g1 + g2)
